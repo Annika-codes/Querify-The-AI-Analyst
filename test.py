@@ -21,7 +21,7 @@ def upload_csv_to_mysql(uploaded_file, cursor, conn):
     # Use the uploaded file name as table name (without .csv)
     table_name = uploaded_file.name.replace(".csv", "").replace(" ", "_").lower()
     
-    # --- Auto-detect column types ---
+    # --- Auto-detect column types -------
     def get_sql_type(series):
         if pd.api.types.is_integer_dtype(series):
             return "INT"

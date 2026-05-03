@@ -84,6 +84,20 @@ st.markdown("""
         margin-bottom: 8px;
     }
     
+    /* Stop messages fading */
+    .stChatMessage {
+    opacity: 1 !important;
+    transition: none !important;
+    }
+
+    /* Scrollable chat area */
+    [data-testid="stVerticalBlockBorderWrapper"] {
+    border: 1px solid #2e2e3e !important;
+    border-radius: 12px !important;
+    padding: 10px !important;
+    background-color: #0f1117 !important;
+    }
+                   
     /* User bubble */
     [data-testid="stChatMessageContent"] {
         background-color: #1e2130;
@@ -172,9 +186,11 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 
 # show old messages
-for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.write(msg["content"])
+chat_container = st.container()
+with chat_container:
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            st.write(msg["content"])
 
 # prefilled question from button click
 user_input = st.chat_input("Ask anything about your data...")
@@ -267,35 +283,67 @@ def get_intent(question):
 
 def plot_chart(df):
     try:
-        numeric_cols = df.select_dtypes(include=['number']).columns
+        numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
+        text_cols = df.select_dtypes(exclude=['number']).columns.tolist()
+
         if len(numeric_cols) == 0:
             return
 
-        # ✅ Single value result (e.g. total sales) — show as metric
+        # ✅ Single value — show as metric card
         if len(df) == 1 and len(df.columns) == 1:
             st.metric(label=numeric_cols[0], value=f"{df[numeric_cols[0]].iloc[0]:,.0f}")
             return
 
-        # ✅ Single row but multiple columns — horizontal bar
-        if len(df) == 1:
-            st.bar_chart(df[numeric_cols])
+        # ✅ Date column detected — Line chart
+        date_col = None
+        for col in text_cols:
+            try:
+                df[col] = pd.to_datetime(df[col])
+                date_col = col
+                break
+            except:
+                pass
+
+        if date_col:
+            y_col = numeric_cols[0]
+            fig, ax = plt.subplots()
+            ax.plot(df[date_col], df[y_col], marker='o', color='#a78bfa')
+            ax.set_xlabel(date_col)
+            ax.set_ylabel(y_col)
+            ax.set_title(f"{y_col} over time")
+            plt.xticks(rotation=45)
+            plt.tight_layout()
+            st.pyplot(fig)
             return
 
-        # Normal case — needs a text column for x-axis
-        text_cols = df.select_dtypes(exclude=['number']).columns
-        if len(text_cols) == 0:
-            st.bar_chart(df[numeric_cols])
+        # ✅ Few categories — Pie chart
+        if len(text_cols) > 0 and len(df) <= 6:
+            x_col = text_cols[0]
+            y_col = numeric_cols[0]
+            fig, ax = plt.subplots()
+            ax.pie(
+                df[y_col],
+                labels=df[x_col],
+                autopct='%1.1f%%',
+                colors=['#a78bfa','#7c3aed','#6d28d9','#4c1d95','#8b5cf6','#c4b5fd']
+            )
+            ax.set_title(f"{y_col} distribution")
+            st.pyplot(fig)
             return
 
-        x_col = text_cols[0]
-        y_col = numeric_cols[0]
-
-        fig, ax = plt.subplots()
-        ax.bar(df[x_col].astype(str), df[y_col])
-        ax.set_xlabel(x_col)
-        ax.set_ylabel(y_col)
-        ax.set_title("Analysis")
-        st.pyplot(fig)
+        # ✅ Default — Bar chart
+        if len(text_cols) > 0:
+            x_col = text_cols[0]
+            y_col = numeric_cols[0]
+            fig, ax = plt.subplots()
+            ax.bar(df[x_col].astype(str), df[y_col], color='#a78bfa')
+            ax.set_xlabel(x_col)
+            ax.set_ylabel(y_col)
+            ax.set_title(f"{y_col} by {x_col}")
+            plt.xticks(rotation=45)
+            plt.tight_layout()
+            st.pyplot(fig)
+            return
 
     except Exception as e:
         st.write("Chart error:", e)

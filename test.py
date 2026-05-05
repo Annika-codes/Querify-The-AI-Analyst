@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import re 
 import csv
 import io
+import json 
 
 #-------------------csv--------------------------------------------
 
@@ -56,20 +57,6 @@ st.markdown("""
     <h1 style='text-align: center; color: #a78bfa;'>🤖 AI Data Analyst</h1>
     <hr style='border: 1px solid #2e2e3e;'>
 """, unsafe_allow_html=True)
-
-st.markdown("#### 💡 Try asking:")
-cols = st.columns(2)
-sample_questions = [
-    "Show all sales",
-    "Total sales per product",
-    "Which product has highest sales?",
-    "Show sales in January 2024"
-]
-
-for i, q in enumerate(sample_questions):
-    with cols[i % 2]:
-        if st.button(q):
-            st.session_state["prefill"] = q
 
 #---------------------CSS---------------------------
 st.markdown("""
@@ -348,76 +335,120 @@ def plot_chart(df):
     except Exception as e:
         st.write("Chart error:", e)
 
+# ---------------- AI SUGGESTIONS ----------------
+
+def generate_suggestions():
+    table_name = st.session_state.get("active_table", "")
+    columns = st.session_state.get("active_columns", [])
+    past_questions = [
+        msg["content"] for msg in st.session_state.get("messages", [])
+        if msg["role"] == "user"
+    ]
+
+    if not table_name or not columns:
+        return []
+
+    column_info = ", ".join(columns)
+    history_info = "\n".join(f"- {q}" for q in past_questions[-5:]) if past_questions else "None yet"
+
+    prompt = f"""
+    You are a data analyst assistant. Suggest exactly 4 short, relevant questions a user might ask
+    about this dataset. Make them specific to the columns available.
+    If past questions exist, suggest follow-up or related questions.
+
+    Table: `{table_name}`
+    Columns: {column_info}
+
+    Past questions asked:
+    {history_info}
+
+    Return ONLY a JSON array of 4 question strings. No explanation. No extra text.
+    Example: ["Question 1", "Question 2", "Question 3", "Question 4"]
+    """
+
+    try:
+        response = ollama.chat(
+            model="llama3",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        raw = response['message']['content'].strip()
+        raw = re.sub(r"```json|```", "", raw).strip()
+        suggestions = json.loads(raw)
+        return suggestions if isinstance(suggestions, list) else []
+    except Exception:
+        return []
+
 # ---------------- MAIN LOGIC ------------------------------------------------------
 
 if "active_table" not in st.session_state:
     st.warning("⬅️ Please upload a CSV file from the sidebar first!")
     st.stop() 
-    
-if user_input:
-    st.session_state.messages.append({"role": "user", "content": user_input})
-    with st.chat_message("user"):
-        st.write(user_input)
 
-    try:
-        intent = get_intent(user_input)
+msg_count = len(st.session_state.get("messages", []))
+last_regen = st.session_state.get("suggestions_regen_at", -1)
 
-        with st.chat_message("assistant"):
+if st.session_state.get("suggestions") is None or last_regen != msg_count:
+    with st.spinner("Generating suggestions u can ask..."):
+        st.session_state["suggestions"] = generate_suggestions()
+        st.session_state["suggestions_regen_at"] = msg_count
 
-            # ---------------- DATA MODE ----------------
-            if intent == "DATA":
-                with st.spinner("Analyzing..."):
-                    raw_sql = get_sql_from_ai(user_input)
-                    sql_query = clean_sql(raw_sql)
-                    st.markdown("**Generated SQL:**")
-                    st.code(sql_query, language='sql')
+suggestions = st.session_state.get("suggestions", [])
+if suggestions:
+    st.markdown("#### 💡 Try asking:")
+    cols = st.columns(2)
+    for i, q in enumerate(suggestions):
+        with cols[i % 2]:
+            if st.button(q, key=f"suggestion_{i}_{msg_count}"):
+                st.session_state["prefill"] = q
 
-                    cursor.execute(sql_query)
-                    result = cursor.fetchall()
-                    if not result:
-                        st.warning("No data returned. Try a different question.")
-                        st.stop()
+with chat_container:
+    if user_input:
+        st.session_state.messages.append({"role": "user", "content": user_input})
+        with st.chat_message("user"):
+            st.write(user_input)
 
-                    columns = [col[0] for col in cursor.description]
-
-                    df = pd.DataFrame(list(result), columns=columns)
-
-                    for col in df.columns:
-                        try:
-                            df[col] = pd.to_numeric(df[col])
-                        except:
-                            pass
-                    
-                    # save data for later explanation
-                    st.session_state["last_df"] = df
-
-                    st.markdown(f"<p style='color: #888; font-size: 13px;'>Showing {len(df)} row(s)</p>", unsafe_allow_html=True)
-                    st.dataframe(df)
-                    csv_data = df.to_csv(index=False).encode("utf-8")
-                    st.download_button(
-                    label="⬇️ Download Result as CSV",
-                    data=csv_data,
-                    file_name="query_result.csv",
-                    mime="text/csv"
-                    )
-            
-                 # -------- SMART CHART --------
-                    plot_chart(df)
-                    # save assistant reply to history
-                    st.session_state.messages.append({"role": "assistant", "content": f"Here are the results for: *{user_input}*"})
-
-            # ---------------- EXPLAIN MODE ----------------
-            else:
-                df = st.session_state.get("last_df", None)
-
-                if df is not None:
-                    explanation = explain_result(user_input, df)
-                    st.subheader("Explanation")
-                    st.write(explanation)
-                    st.session_state.messages.append({"role": "assistant", "content": explanation})
+        try:
+            intent = get_intent(user_input)
+            with st.chat_message("assistant"):
+                if intent == "DATA":
+                    with st.spinner("Analyzing..."):
+                        raw_sql = get_sql_from_ai(user_input)
+                        sql_query = clean_sql(raw_sql)
+                        st.markdown("**Generated SQL:**")
+                        st.code(sql_query, language='sql')
+                        cursor.execute(sql_query)
+                        result = cursor.fetchall()
+                        if not result:
+                            st.warning("No data returned. Try a different question.")
+                            st.stop()
+                        columns = [col[0] for col in cursor.description]
+                        df = pd.DataFrame(list(result), columns=columns)
+                        for col in df.columns:
+                            try:
+                                df[col] = pd.to_numeric(df[col])
+                            except:
+                                pass
+                        st.session_state["last_df"] = df
+                        st.markdown(f"<p style='color: #888; font-size: 13px;'>Showing {len(df)} row(s)</p>", unsafe_allow_html=True)
+                        st.dataframe(df)
+                        csv_data = df.to_csv(index=False).encode("utf-8")
+                        st.download_button(
+                            label="⬇️ Download Result as CSV",
+                            data=csv_data,
+                            file_name="query_result.csv",
+                            mime="text/csv"
+                        )
+                        plot_chart(df)
+                        st.session_state.messages.append({"role": "assistant", "content": f"Here are the results for: *{user_input}*"})
                 else:
-                    st.write("No data available yet. Ask a data question first.")
-
-    except Exception as e:
-        st.error("Something went wrong")
-        st.write(e)
+                    df = st.session_state.get("last_df", None)
+                    if df is not None:
+                        explanation = explain_result(user_input, df)
+                        st.subheader("Explanation")
+                        st.write(explanation)
+                        st.session_state.messages.append({"role": "assistant", "content": explanation})
+                    else:
+                        st.write("No data available yet. Ask a data question first.")
+        except Exception as e:
+            st.error("Something went wrong")
+            st.write(e)
